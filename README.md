@@ -27,9 +27,9 @@ This tool provides a set of utilities for analyzing and managing IPTV streams in
 ## Configuration
 
 1.  **Create your configuration file:**
-    Copy the `.env.example` file to `.env`:
+    Copy the `.env.template` file to `.env`:
     ```bash
-    cp .env.example .env
+    cp .env.template .env
     ```
 
 2.  **Edit `.env`:**
