@@ -5,13 +5,11 @@ This repository contains Python scripts designed to interact with a Dispatcharr 
 ## Project Structure
 
 -   `api_utils.py`: Contains centralized utility functions for interacting with the Dispatcharr API, including authentication, data fetching, and channel/stream updates. All other scripts leverage these functions.
--   `channel_manager.py`: A powerful, unified script for splitting and organizing channels based on various criteria (codec, resolution, FPS, interlacing). Its behavior is configured via `config.ini`.
 -   `channels_upload.py`: Facilitates the bulk upload and synchronization of channels to Dispatcharr from a CSV file.
--   `config.ini`: The primary configuration file for all scripts. It defines splitting rules, channel numbering schemes, and general script settings.
+-   `config.ini`: The primary configuration file for all scripts. It defines script settings, channel filtering ranges, and scoring parameters.
 -   `dispatcharr-stream-sorter.py`: The main script for fetching, analyzing, scoring, and reordering streams within Dispatcharr. It uses `ffmpeg` for stream analysis and integrates with `config.ini` for its operational parameters.
 -   `groups_upload.py`: Enables the bulk upload and synchronization of channel groups to Dispatcharr from a CSV file.
 -   `get_stream_data.py`: A utility script to fetch and display all data for a specific stream, saving it to a CSV file.
--   `update_stream_stats.py`: A utility script to update stream stats on the server from a CSV file (functionality now integrated into `dispatcharr-stream-sorter.py`).
 -   `requirements.txt`: Lists all Python dependencies required to run the scripts.
 -   `swagger.json`: API documentation for Dispatcharr (for reference).
 -   `csv/`: This directory stores various CSV files used by the scripts:
@@ -54,11 +52,7 @@ All non-sensitive configuration is managed through `config.ini`. Sensitive infor
     ```
 
 2.  **Configure `config.ini`:**
-    Open `config.ini` and adjust settings under the following sections:
-
-    -   `[splitting_rules]`: Enable or disable various criteria for channel splitting (e.g., `HEVC = Y`, `4K = N`).
-    -   `[channel_numbering]`: Define starting channel numbers for different categories and combinations. This allows for organized channel numbering based on your splitting rules.
-    -   `[script_settings]`: General settings including input/output file paths, dry-run mode, and channel filtering ranges (by number and group ID).
+    Open `config.ini` and adjust settings under the `[script_settings]` section. This includes input/output file paths, channel filtering ranges (by number and group ID), and scoring parameters.
 
 ## Usage
 
@@ -95,26 +89,12 @@ If no command is specified, it runs a default pipeline: `fetch` -> `analyze` -> 
     python dispatcharr-stream-sorter.py reorder [--input <input_file>]
     ```
 
-### `channel_manager.py`
-
-This script splits and organizes channels into new categories based on rules defined in `config.ini`. It creates new channels and assigns streams to them according to video codec, resolution, FPS, and interlaced status.
-
-```bash
-python channel_manager.py
-```
-
 ### Utility Scripts
 
 -   **`get_stream_data.py`**
     Fetches all data for a specific stream and saves it to a CSV file.
     ```bash
     python get_stream_data.py [stream_id]
-    ```
-
--   **`update_stream_stats.py`**
-    Updates stream stats on the server from a CSV file. This functionality is now integrated into the `score` command of `dispatcharr-stream-sorter.py`.
-    ```bash
-    python update_stream_stats.py
     ```
 
 ### Upload Utilities (`groups_upload.py`, `channels_upload.py`)
@@ -141,10 +121,4 @@ If channels and streams are accidentally deleted from Dispatcharr, you can use t
     Use `channels_upload.py` with your `01_channels_metadata.csv` backup. This will recreate channels and update `01_channels_metadata.csv` with new Dispatcharr IDs.
     ```bash
     python channels_upload.py csv/01_channels_metadata.csv
-    ```
-
-2.  **Reassign Streams:**
-    Use `stream_reassigner.py` to re-link streams from `02_grouped_channel_streams.csv` to the newly created channels. This script intelligently matches streams to channels based on cleaned names.
-    ```bash
-    python stream_reassigner.py
     ```
