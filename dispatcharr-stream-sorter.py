@@ -742,7 +742,7 @@ def update_stream_stats(csv_path):
             "source_fps": row.get("fps"),
             "video_codec": row.get("video_codec"),
             "audio_codec": row.get("audio_codec"),
-            "ffmpeg_output_bitrate": row.get("avg_bitrate_kbps"),
+            "ffmpeg_output_bitrate": int(row.get("avg_bitrate_kbps")) if pd.notna(row.get("avg_bitrate_kbps")) else None,
         }
 
         # Clean up the payload, removing any None values
