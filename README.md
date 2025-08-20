@@ -9,9 +9,7 @@ This repository contains Python scripts designed to interact with a Dispatcharr 
 -   `config.ini`: The primary configuration file for all scripts. It defines script settings, channel filtering ranges, and scoring parameters.
 -   `dispatcharr-stream-sorter.py`: The main script for fetching, analyzing, scoring, and reordering streams within Dispatcharr. It uses `ffmpeg` for stream analysis and integrates with `config.ini` for its operational parameters.
 -   `groups_upload.py`: Enables the bulk upload and synchronization of channel groups to Dispatcharr from a CSV file.
--   `get_stream_data.py`: A utility script to fetch and display all data for a specific stream, saving it to a CSV file.
 -   `requirements.txt`: Lists all Python dependencies required to run the scripts.
--   `swagger.json`: API documentation for Dispatcharr (for reference).
 -   `csv/`: This directory stores various CSV files used by the scripts:
     -   `00_channel_groups.csv`: Stores fetched channel group metadata.
     -   `01_channels_metadata.csv`: Stores fetched channel metadata, including new IDs after channel restoration.
@@ -89,14 +87,6 @@ If no command is specified, it runs a default pipeline: `fetch` -> `analyze` -> 
     python dispatcharr-stream-sorter.py reorder [--input <input_file>]
     ```
 
-### Utility Scripts
-
--   **`get_stream_data.py`**
-    Fetches all data for a specific stream and saves it to a CSV file.
-    ```bash
-    python get_stream_data.py [stream_id]
-    ```
-
 ### Upload Utilities (`groups_upload.py`, `channels_upload.py`)
 
 These scripts are used for bulk creation or updating of channel groups and channels from CSV files. They are particularly useful for initial setup or restoring data.
@@ -111,14 +101,4 @@ These scripts are used for bulk creation or updating of channel groups and chann
     Synchronizes channels using `csv/channels_template.csv` or a specified CSV. It automatically refreshes `csv/01_channels_metadata.csv`.
     ```bash
     python channels_upload.py [--csv_file <path_to_csv>]
-    ```
-
-## Restoring Channels and Streams (After Accidental Deletion)
-
-If channels and streams are accidentally deleted from Dispatcharr, you can use the following steps to restore them, assuming you have `01_channels_metadata.csv` and `02_grouped_channel_streams.csv` backups.
-
-1.  **Restore Channels:**
-    Use `channels_upload.py` with your `01_channels_metadata.csv` backup. This will recreate channels and update `01_channels_metadata.csv` with new Dispatcharr IDs.
-    ```bash
-    python channels_upload.py csv/01_channels_metadata.csv
     ```
