@@ -1,14 +1,26 @@
 # Dispatcharr Utilities
 
-This tool provides a set of utilities for analyzing and managing IPTV streams in a Dispatcharr instance.
+This repository contains Python scripts designed to interact with a Dispatcharr instance, enabling advanced stream management, analysis, and bulk data operations.
 
-## Features
+## Project Structure
 
--   **Login:** Authenticate with your Dispatcharr instance and save the token for future use.
--   **Fetch:** Fetch channel and stream information from your Dispatcharr instance and save it to CSV files.
--   **Analyze:** Analyze IPTV streams using `ffmpeg` to gather metrics like bitrate, resolution, and FPS.
--   **Score:** Score and sort streams based on the analyzed metrics to identify the best quality streams for each channel.
--   **Reorder:** Reorder streams in your Dispatcharr instance based on the generated scores.
+-   `api_utils.py`: Contains centralized utility functions for interacting with the Dispatcharr API, including authentication, data fetching, and channel/stream updates. All other scripts leverage these functions.
+-   `channel_manager.py`: A powerful, unified script for splitting and organizing channels based on various criteria (codec, resolution, FPS, interlacing). Its behavior is configured via `config.ini`.
+-   `channels_upload.py`: Facilitates the bulk upload and synchronization of channels to Dispatcharr from a CSV file.
+-   `config.ini`: The primary configuration file for all scripts. It defines splitting rules, channel numbering schemes, and general script settings.
+-   `dispatcharr-stream-sorter.py`: The main script for fetching, analyzing, scoring, and reordering streams within Dispatcharr. It uses `ffmpeg` for stream analysis and integrates with `config.ini` for its operational parameters.
+-   `groups_upload.py`: Enables the bulk upload and synchronization of channel groups to Dispatcharr from a CSV file.
+-   `get_stream_data.py`: A utility script to fetch and display all data for a specific stream, saving it to a CSV file.
+-   `update_stream_stats.py`: A utility script to update stream stats on the server from a CSV file (functionality now integrated into `dispatcharr-stream-sorter.py`).
+-   `requirements.txt`: Lists all Python dependencies required to run the scripts.
+-   `swagger.json`: API documentation for Dispatcharr (for reference).
+-   `csv/`: This directory stores various CSV files used by the scripts:
+    -   `00_channel_groups.csv`: Stores fetched channel group metadata.
+    -   `01_channels_metadata.csv`: Stores fetched channel metadata, including new IDs after channel restoration.
+    -   `02_grouped_channel_streams.csv`: Contains raw stream data fetched from Dispatcharr, including `channel_group_id`.
+    -   `03_iptv_stream_measurements.csv`: Stores detailed analysis results for each stream.
+    -   `04_fails.csv`: Logs streams that failed analysis.
+    -   `05_iptv_streams_scored_sorted.csv`: Contains streams sorted by quality score.
 
 ## Installation
 
@@ -19,110 +31,120 @@ This tool provides a set of utilities for analyzing and managing IPTV streams in
     ```
 
 2.  **Install dependencies:**
-    Make sure you have Python 3 and `ffmpeg` installed and available in your system's PATH. You can install the required Python packages using pip:
+    Ensure you have Python 3 and `ffmpeg` installed and available in your system's PATH. Then, install the required Python packages:
     ```bash
     pip install -r requirements.txt
     ```
 
 ## Configuration
 
-1.  **Create your configuration file:**
-    Copy the `.env.template` file to `.env`:
+All non-sensitive configuration is managed through `config.ini`. Sensitive information (like API keys) should be stored in a `.env` file.
+
+1.  **Create your environment file (`.env`):**
+    Copy `.env.template` to `.env` and fill in your Dispatcharr credentials:
     ```bash
     cp .env.template .env
     ```
-
-2.  **Edit `.env`:**
-    Open the newly created `.env` file and fill in your Dispatcharr instance details and adjust any parameters as needed.
-
+    Example `.env` content:
     ```ini
     DISPATCHARR_BASE_URL="http://your-dispatcharr-instance.com:9191"
     DISPATCHARR_USER="your-username"
     DISPATCHARR_PASS="your-password"
-    # DISPATCHER_TOKEN can be left blank, the script will fill it in
-    DISPATCHARR_TOKEN=''
-    # Channel range for fetching streams (used by 'fetch' command).
-    # Set START_CHANNEL and END_CHANNEL to encompass all your Dispatcharr Channel numbers.
-    # Example: START_CHANNEL="1" and END_CHANNEL="1" to analyze only Channel 1.
-    # Example: START_CHANNEL="1" and END_CHANNEL="10" to analyze a range of channels.
-    START_CHANNEL="1"
-    END_CHANNEL="999"
-    # Number of days to keep stream analysis measurements (used by 'analyze' command).
-    # Streams older than this will be re-analyzed.
-    # Set to "0" to force re-analysis of all channels in your specified range.
-    STREAM_LAST_MEASURED="7"
-    # Bonus points added to a stream's score if its FPS is 50 or higher (used by 'score' command).
-    # Set to "0" if you prefer streams to be ranked solely by Bitrate & Resolution.
-    # A value like "55" is recommended to boost channels with higher FPS, useful for sports streams.
-    FPS_BONUS_POINTS="55"
+    DISPATCHARR_TOKEN='' # This will be populated automatically after login
     ```
+
+2.  **Configure `config.ini`:**
+    Open `config.ini` and adjust settings under the following sections:
+
+    -   `[splitting_rules]`: Enable or disable various criteria for channel splitting (e.g., `HEVC = Y`, `4K = N`).
+    -   `[channel_numbering]`: Define starting channel numbers for different categories and combinations. This allows for organized channel numbering based on your splitting rules.
+    -   `[script_settings]`: General settings including input/output file paths, dry-run mode, and channel filtering ranges (by number and group ID).
 
 ## Usage
 
-The tool is used via the command line. Here is the basic syntax:
+### `dispatcharr-stream-sorter.py`
+
+This is the primary script for managing stream quality. It automates fetching, analyzing, scoring, and reordering streams.
 
 ```bash
 python dispatcharr-stream-sorter.py [command] [options]
 ```
 
-If no command is specified, the tool will run through a default pipeline: `login` -> `fetch` -> `analyze` -> `score` -> `reorder`.
+If no command is specified, it runs a default pipeline: `fetch` -> `analyze` -> `score` -> `reorder` (with stream stats updated).
 
-### Commands
+**Commands:**
 
-#### `login`
+-   `login`: Authenticates with Dispatcharr and saves the token.
+    ```bash
+    python dispatcharr-stream-sorter.py login
+    ```
+-   `fetch`: Fetches channel and stream metadata. Output includes `channel_group_id`.
+    ```bash
+    python dispatcharr-stream-sorter.py fetch [--output <output_file>]
+    ```
+-   `analyze`: Analyzes streams using `ffmpeg`. Configurable duration, frames, and workers.
+    ```bash
+    python dispatcharr-stream-sorter.py analyze [--input <input_file>] [--output <output_file>] [--fails_output <fails_file>] [--duration <seconds>] [--idet-frames <frames>] [--timeout <seconds>] [--workers <number>] [--retries <number>] [--retry-delay <seconds>]
+    ```
+-   `score`: Calculates scores and sorts streams based on quality metrics. Can also update stream stats on the server.
+    ```bash
+    python dispatcharr-stream-sorter.py score [--input <input_file>] [--output <output_file>] [--update-stats]
+    ```
+-   `reorder`: Updates stream order in Dispatcharr based on scores.
+    ```bash
+    python dispatcharr-stream-sorter.py reorder [--input <input_file>]
+    ```
 
-Authenticates with your Dispatcharr instance and saves the access token to your `.env` file. This command must be run successfully before other commands can interact with the API.
+### `channel_manager.py`
 
-```bash
-python dispatcharr-stream-sorter.py login
-```
-
-#### `fetch`
-
-Retrieves channel and stream metadata from your Dispatcharr instance and saves it into CSV files (`csv/00_channel_groups.csv`, `csv/01_channels_metadata.csv`, and `csv/02_grouped_channel_streams.csv`).
-
-```bash
-python dispatcharr-stream-sorter.py fetch [--output <output_file>]
-```
-
-#### `analyze`
-
-Processes the streams listed in the input CSV (defaulting to `csv/02_grouped_channel_streams.csv`) using `ffmpeg` to measure bitrate, FPS, and resolution. Results are appended to `csv/03_iptv_stream_measurements.csv`.
-
-```bash
-python dispatcharr-stream-sorter.py analyze [--input <input_file>] [--output <output_file>] [--fails_output <fails_file>] [--duration <seconds>] [--timeout <seconds>] [--workers <number>]
-```
-
-#### `score`
-
-Calculates average metrics for each stream from the analysis results (defaulting to `csv/03_iptv_stream_measurements.csv`), then scores and sorts them based on quality criteria. The final sorted list is saved to `csv/05_iptv_streams_scored_sorted.csv`.
+This script splits and organizes channels into new categories based on rules defined in `config.ini`. It creates new channels and assigns streams to them according to video codec, resolution, FPS, and interlaced status.
 
 ```bash
-python dispatcharr-stream-sorter.py score [--input <input_file>] [--output <output_file>]
+python channel_manager.py
 ```
 
-#### `reorder`
+### Utility Scripts
 
-Reads the scored and sorted stream data from the input CSV (defaulting to `csv/05_iptv_streams_scored_sorted.csv`) and updates the stream order for each channel in your Dispatcharr instance via the API.
+-   **`get_stream_data.py`**
+    Fetches all data for a specific stream and saves it to a CSV file.
+    ```bash
+    python get_stream_data.py [stream_id]
+    ```
 
-```bash
-python dispatcharr-stream-sorter.py reorder [--input <input_file>]
-```
+-   **`update_stream_stats.py`**
+    Updates stream stats on the server from a CSV file. This functionality is now integrated into the `score` command of `dispatcharr-stream-sorter.py`.
+    ```bash
+    python update_stream_stats.py
+    ```
 
-### Example Workflow
+### Upload Utilities (`groups_upload.py`, `channels_upload.py`)
 
-To run the complete analysis and reordering pipeline, simply execute the script without any arguments:
+These scripts are used for bulk creation or updating of channel groups and channels from CSV files. They are particularly useful for initial setup or restoring data.
 
-```bash
-python dispatcharr-stream-sorter.py
-```
+-   **`groups_upload.py`**
+    Synchronizes channel groups using `csv/groups_template.csv`.
+    ```bash
+    python groups_upload.py
+    ```
 
-This single command will perform the following steps automatically:
+-   **`channels_upload.py`**
+    Synchronizes channels using `csv/channels_template.csv` or a specified CSV. It automatically refreshes `csv/01_channels_metadata.csv`.
+    ```bash
+    python channels_upload.py [--csv_file <path_to_csv>]
+    ```
 
-1.  **Login:** Authenticate with your Dispatcharr instance.
-2.  **Fetch:** Retrieve channel and stream information.
-3.  **Analyze:** Measure stream quality using `ffmpeg`.
-4.  **Score:** Calculate scores and sort streams based on quality.
-5.  **Reorder:** Update the stream order in your Dispatcharr instance.
+## Restoring Channels and Streams (After Accidental Deletion)
 
-You can also run individual commands (e.g., `python dispatcharr-stream-sorter.py fetch`) if you need to perform specific steps separately.
+If channels and streams are accidentally deleted from Dispatcharr, you can use the following steps to restore them, assuming you have `01_channels_metadata.csv` and `02_grouped_channel_streams.csv` backups.
+
+1.  **Restore Channels:**
+    Use `channels_upload.py` with your `01_channels_metadata.csv` backup. This will recreate channels and update `01_channels_metadata.csv` with new Dispatcharr IDs.
+    ```bash
+    python channels_upload.py csv/01_channels_metadata.csv
+    ```
+
+2.  **Reassign Streams:**
+    Use `stream_reassigner.py` to re-link streams from `02_grouped_channel_streams.csv` to the newly created channels. This script intelligently matches streams to channels based on cleaned names.
+    ```bash
+    python stream_reassigner.py
+    ```
