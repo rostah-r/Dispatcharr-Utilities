@@ -1,5 +1,3 @@
-
-
 import argparse
 import configparser
 import csv
@@ -31,6 +29,17 @@ from api_utils import (
 
 # --- Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def setup_file_logger(name, log_file, level=logging.DEBUG):
+    """Function to setup as many loggers as you want"""
+    handler = logging.FileHandler(log_file, mode='w')
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    logger.addHandler(handler)
+
+    return logger
 
 # --- Configuration ---
 def load_config():
@@ -233,7 +242,7 @@ def _check_interlaced_status(url, stream_name, idet_frames, timeout):
         logging.error(f"Error checking interlacing for {stream_name} ({url}): {e}")
         return "UNKNOWN (Error)"
 
-def _get_bitrate_and_frame_stats(url, ffmpeg_duration, timeout):
+def _get_bitrate_and_frame_stats(url, ffmpeg_duration, timeout, logger=None):
     """Gets bitrate and frame statistics using ffmpeg."""
     command = [
         'ffmpeg', '-re', '-v', 'debug', '-user_agent', 'VLC/3.0.14',
@@ -250,6 +259,8 @@ def _get_bitrate_and_frame_stats(url, ffmpeg_duration, timeout):
         result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout, text=True)
         elapsed = time.time() - start
         output = result.stderr
+        if logger:
+            logger.debug(f"ffmpeg output for {url}:\n{output}")
         total_bytes = 0
         for line in output.splitlines():
             if "Statistics:" in line and "bytes read" in line:
@@ -361,7 +372,7 @@ def _check_stream_for_critical_errors(url, stream_name, timeout, config):
 
     return errors
 
-def _analyze_stream_task(row, ffmpeg_duration, idet_frames, timeout, retries, retry_delay, config):
+def _analyze_stream_task(row, ffmpeg_duration, idet_frames, timeout, retries, retry_delay, config, logger=None):
     url = row.get('stream_url')
     stream_name = row.get('stream_name', 'Unknown')
     if not url:
@@ -408,7 +419,7 @@ def _analyze_stream_task(row, ffmpeg_duration, idet_frames, timeout, retries, re
                 row['audio_codec'] = audio_info.get('codec_name')
 
             # 2. Get Bitrate and Frame Drop stats from ffmpeg
-            bitrate, frames_decoded, frames_dropped, status, elapsed = _get_bitrate_and_frame_stats(url, ffmpeg_duration, timeout)
+            bitrate, frames_decoded, frames_dropped, status, elapsed = _get_bitrate_and_frame_stats(url, ffmpeg_duration, timeout, logger)
             row['bitrate_kbps'] = bitrate
             row['frames_decoded'] = frames_decoded
             row['frames_dropped'] = frames_dropped
@@ -678,9 +689,17 @@ def score_streams(config, input_csv, output_csv, update_stats=False):
     fps_bonus_points = settings.getint("fps_bonus_points", 55)
     summary['fps_bonus'] = 0
     summary.loc[pd.to_numeric(summary['fps'], errors='coerce').fillna(0) >= 50, 'fps_bonus'] = fps_bonus_points
-    
-    summary['max_bitrate_for_channel'] = summary.groupby('channel_id')['avg_bitrate_kbps'].transform('max')
-    summary['bitrate_score'] = (summary['avg_bitrate_kbps'] / (summary['max_bitrate_for_channel'] * 0.01)).fillna(0)
+
+    # Apply HEVC boost
+    hevc_boost = settings.getfloat("hevc_boost", 1.0)
+    # Use a temporary column for scoring so we don't overwrite the original bitrate
+    summary['scoring_bitrate'] = summary['avg_bitrate_kbps']
+    if hevc_boost != 1.0:
+        logging.info(f"Applying HEVC boost of {hevc_boost} to HEVC streams for scoring.")
+        summary.loc[summary['video_codec'] == 'hevc', 'scoring_bitrate'] *= hevc_boost
+
+    summary['max_bitrate_for_channel'] = summary.groupby('channel_id')['scoring_bitrate'].transform('max')
+    summary['bitrate_score'] = (summary['scoring_bitrate'] / (summary['max_bitrate_for_channel'] * 0.01)).fillna(0)
     
     summary['dropped_frames_penalty'] = summary['dropped_frame_percentage'] * 1
 
@@ -916,6 +935,117 @@ def retry_failed_streams(config, input_csv, fails_csv, ffmpeg_duration, idet_fra
 
     logging.info(f"Retry complete. Updated {input_csv} and {fails_csv}.")
 
+def analyze_missing_bitrate_streams(config, input_csv, output_csv, fails_csv, ffmpeg_duration, idet_frames, timeout, max_workers, retries, retry_delay, dry_run=False):
+    """
+    Analyzes streams from the scored/sorted CSV that have 'N/A' as their bitrate.
+    This is useful for filling in missing data points without re-analyzing everything.
+    The results are appended to the main measurements CSV.
+    """
+    if not _check_ffmpeg_installed():
+        sys.exit(1)
+
+    logger = setup_file_logger('missing_streams', 'missing.txt')
+
+    try:
+        df_scored = pd.read_csv(input_csv)
+    except FileNotFoundError:
+        logging.error(f"Input scored/sorted CSV not found: {input_csv}")
+        return
+
+    # Filter for streams where bitrate is N/A
+    # The column in 05_... is avg_bitrate_kbps
+    missing_bitrate_df = df_scored[df_scored['avg_bitrate_kbps'].isna() | (df_scored['avg_bitrate_kbps'] == 'N/A')].copy()
+
+    if missing_bitrate_df.empty:
+        logging.info("No streams with missing bitrate found to analyze.")
+        return
+
+    if dry_run:
+        logging.info("--- DRY RUN ---")
+        logging.info("The following streams would be analyzed:")
+        with open("dryrun.txt", "w", encoding="utf-8") as f:
+            for index, row in missing_bitrate_df.iterrows():
+                stream_info = f"Stream Name: {row['stream_name']}, Stream URL: {row['stream_url']}"
+                print(stream_info)
+                f.write(stream_info + "\n")
+        logging.info("--- END DRY RUN ---")
+        return
+
+    logging.info(f"Found {len(missing_bitrate_df)} streams with missing bitrate to analyze.")
+
+    # Prepare the list of streams to analyze
+    streams_to_analyze = missing_bitrate_df.to_dict('records')
+
+    # Define the columns for the output CSV
+    final_columns = [
+        'channel_number', 'channel_id', 'stream_id', 'stream_name', 'stream_url',
+        'channel_group_id', 'timestamp', 'video_codec', 'audio_codec', 'interlaced_status',
+        'status', 'bitrate_kbps', 'fps', 'resolution', 'frames_decoded', 'frames_dropped',
+        'err_decode', 'err_discontinuity', 'err_timeout'
+    ]
+
+    # Ensure the output directory exists
+    Path(output_csv).parent.mkdir(parents=True, exist_ok=True)
+    Path(fails_csv).parent.mkdir(parents=True, exist_ok=True)
+
+    # Check if files exist to determine if we need to write headers
+    output_exists = os.path.exists(output_csv)
+    fails_exists = os.path.exists(fails_csv)
+
+    try:
+        with open(output_csv, 'a', newline='', encoding='utf-8') as f_out, \
+             open(fails_csv, 'a', newline='', encoding='utf-8') as f_fails:
+
+            writer_out = csv.DictWriter(f_out, fieldnames=final_columns, extrasaction='ignore', lineterminator='\n')
+            writer_fails = csv.DictWriter(f_fails, fieldnames=final_columns, extrasaction='ignore', lineterminator='\n')
+
+            if not output_exists or os.path.getsize(output_csv) == 0:
+                writer_out.writeheader()
+            if not fails_exists or os.path.getsize(fails_csv) == 0:
+                writer_fails.writeheader()
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_row = {executor.submit(_analyze_stream_task, row, ffmpeg_duration, idet_frames, timeout, retries, retry_delay, config, logger): row for row in streams_to_analyze}
+
+                for future in future_to_row:
+                    try:
+                        result_row = future.result()
+
+                        # Write to the main measurements file
+                        writer_out.writerow(result_row)
+                        f_out.flush()
+
+                        # If the stream failed, write to the fails file
+                        if result_row.get('status') != 'OK':
+                            writer_fails.writerow(result_row)
+                            f_fails.flush()
+
+                    except Exception as exc:
+                        original_row = future_to_row[future]
+                        logging.error(f'Stream {original_row.get("stream_name", "Unknown")} generated an exception: {exc}')
+                        original_row.update({'timestamp': datetime.now().isoformat(), 'status': "Exception"})
+                        default_errors = {'err_decode': False, 'err_discontinuity': False, 'err_timeout': True}
+                        original_row.update(default_errors)
+
+                        writer_out.writerow(original_row)
+                        writer_fails.writerow(original_row)
+                        f_out.flush()
+                        f_fails.flush()
+
+        logging.info(f"Missing bitrate analysis complete. Results appended to {output_csv} and {fails_csv}")
+
+        # Deduplicate the results file to keep the latest measurements
+        logging.info(f"Deduplicating final results in {output_csv}...")
+        df_final = pd.read_csv(output_csv)
+        df_final.sort_values(by='timestamp', ascending=True, inplace=True)
+        df_final.drop_duplicates(subset=['stream_id'], keep='last', inplace=True)
+        df_final = df_final.reindex(columns=final_columns)
+        df_final.to_csv(output_csv, index=False, na_rep='N/A')
+        logging.info(f"Successfully deduplicated and saved final results to {output_csv}")
+
+    except Exception as e:
+        logging.error(f"An error occurred during missing bitrate analysis: {e}")
+
 def main():
     """Main function to parse arguments and call the appropriate function."""
     load_dotenv()
@@ -959,6 +1089,18 @@ def main():
     retry_parser.add_argument('--timeout', type=int, default=30)
     retry_parser.add_argument('--workers', type=int, default=8)
 
+    analyze_missing_parser = subparsers.add_parser('analyze-missing', help='Analyze streams with missing bitrate from the scored list.')
+    analyze_missing_parser.add_argument('--input', type=str, default='csv/05_iptv_streams_scored_sorted.csv')
+    analyze_missing_parser.add_argument('--output', type=str, default='csv/03_iptv_stream_measurements.csv')
+    analyze_missing_parser.add_argument('--fails_output', type=str, default='csv/04_fails.csv')
+    analyze_missing_parser.add_argument('--duration', type=int, default=10, help='Duration in seconds for ffmpeg to analyze stream.')
+    analyze_missing_parser.add_argument('--idet-frames', type=int, default=500)
+    analyze_missing_parser.add_argument('--timeout', type=int, default=30)
+    analyze_missing_parser.add_argument('--workers', type=int, default=8)
+    analyze_missing_parser.add_argument('--retries', type=int, default=1)
+    analyze_missing_parser.add_argument('--retry-delay', type=int, default=10)
+    analyze_missing_parser.add_argument('--dry-run', action='store_true', help='Print the streams that would be analyzed and exit.')
+
     args = parser.parse_args()
 
     if args.command == 'login':
@@ -973,6 +1115,8 @@ def main():
         reorder_streams(config, args.input)
     elif args.command == 'retry':
         retry_failed_streams(config, args.input, args.fails_output, args.duration, args.idet_frames, args.timeout, args.workers)
+    elif args.command == 'analyze-missing':
+        analyze_missing_bitrate_streams(config, args.input, args.output, args.fails_output, args.duration, args.idet_frames, args.timeout, args.workers, args.retries, args.retry_delay, args.dry_run)
     else:
         logging.info("No command specified. Running default pipeline: fetch -> analyze -> score -> reorder")
         fetch_streams(config, 'csv/02_grouped_channel_streams.csv')
@@ -982,3 +1126,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
