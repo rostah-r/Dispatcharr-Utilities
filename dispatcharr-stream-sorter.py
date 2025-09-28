@@ -509,23 +509,27 @@ def analyze_streams(config, input_csv, output_csv, fails_csv, ffmpeg_duration, i
             logging.warning(f"Could not read or parse existing measurements file '{output_csv}'. Re-analyzing all streams. Error: {e}")
 
     # --- Duplicate Stream Handling (API removal part) ---
-    duplicates = df[df.duplicated(subset=['stream_url'], keep='first')]
-    if not duplicates.empty:
-        channels_with_duplicates = duplicates.groupby('channel_id')['stream_id'].apply(list).to_dict()
-        for channel_id, stream_ids_to_remove in channels_with_duplicates.items():
-            try:
-                current_streams_data = fetch_channel_streams(channel_id)
-                if current_streams_data:
-                    current_stream_ids = [s['id'] for s in current_streams_data]
-                    updated_stream_ids = [sid for sid in current_stream_ids if sid not in stream_ids_to_remove]
-                    if len(updated_stream_ids) < len(current_stream_ids):
-                        logging.info(f"Updating channel {channel_id} to remove {len(current_stream_ids) - len(updated_stream_ids)} duplicate streams.")
-                        update_channel_streams(channel_id, updated_stream_ids)
-            except Exception as e:
-                logging.error(f"Error removing duplicate streams for channel {channel_id}: {e}")
-
-    # --- Prepare Final List for Analysis ---
-    df.drop_duplicates(subset=['stream_url'], keep='first', inplace=True)
+    if settings.getboolean('remove_duplicates', True):
+        logging.info("Removing duplicate streams within the same channel based on stream_url...")
+        duplicates = df[df.duplicated(subset=['channel_id', 'stream_url'], keep='first')]
+        if not duplicates.empty:
+            channels_with_duplicates = duplicates.groupby('channel_id')['stream_id'].apply(list).to_dict()
+            for channel_id, stream_ids_to_remove in channels_with_duplicates.items():
+                try:
+                    current_streams_data = fetch_channel_streams(channel_id)
+                    if current_streams_data:
+                        current_stream_ids = [s['id'] for s in current_streams_data]
+                        updated_stream_ids = [sid for sid in current_stream_ids if sid not in stream_ids_to_remove]
+                        if len(updated_stream_ids) < len(current_stream_ids):
+                            logging.info(f"Updating channel {channel_id} to remove {len(current_stream_ids) - len(updated_stream_ids)} duplicate streams.")
+                            update_channel_streams(channel_id, updated_stream_ids)
+                except Exception as e:
+                    logging.error(f"Error removing duplicate streams for channel {channel_id}: {e}")
+        
+        # Drop duplicates from the DataFrame to be analyzed
+        df.drop_duplicates(subset=['channel_id', 'stream_url'], keep='first', inplace=True)
+    else:
+        logging.info("Skipping duplicate stream removal as per config setting.")
 
     if df.empty:
         logging.info("All filtered streams have been analyzed recently. Nothing to do.")
@@ -1126,4 +1130,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
